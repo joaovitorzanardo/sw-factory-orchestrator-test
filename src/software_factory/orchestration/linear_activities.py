@@ -31,6 +31,18 @@ class LinearActivities:
                 f"issue {request.issue_id} não encontrada no Linear", non_retryable=True
             )
         current = issue["state"]["name"]
+        states = issue["team"]["states"]["nodes"]
+        names = {s["name"].lower() for s in states}
+        missing = [
+            name for name in (request.to_state, *request.require_states) if name.lower() not in names
+        ]
+        if missing:
+            available = ", ".join(s["name"] for s in states)
+            raise ApplicationError(
+                f"status {', '.join(map(repr, missing))} não existe no time da issue"
+                f" (há: {available})",
+                non_retryable=True,
+            )
         # Já no destino (inclusive retry após uma mutation aplicada): nada a fazer.
         if current.lower() == request.to_state.lower():
             return True
@@ -44,16 +56,7 @@ class LinearActivities:
             )
             return False
 
-        states = issue["team"]["states"]["nodes"]
-        target = next(
-            (s for s in states if s["name"].lower() == request.to_state.lower()), None
-        )
-        if target is None:
-            available = ", ".join(s["name"] for s in states)
-            raise ApplicationError(
-                f"status {request.to_state!r} não existe no time da issue (há: {available})",
-                non_retryable=True,
-            )
+        target = next(s for s in states if s["name"].lower() == request.to_state.lower())
         result = await self.client.execute(
             UPDATE_STATE_MUTATION, {"id": request.issue_id, "stateId": target["id"]}
         )

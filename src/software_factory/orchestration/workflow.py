@@ -29,9 +29,15 @@ class PlanIssueWorkflow:
     @workflow.run
     async def run(self, issue: PlanIssueInput) -> PlanResult:
         # Só sai de To Do: issue que recebeu a label em outro status é planejada sem mover.
+        # In Progress é validado já aqui para não descobrir no fim, com o plano já commitado.
         moved: bool = await workflow.execute_activity(
             "move_issue",
-            MoveIssueRequest(issue.issue_id, to_state=STATE_IN_PLANNING, from_state=STATE_TODO),
+            MoveIssueRequest(
+                issue.issue_id,
+                to_state=STATE_IN_PLANNING,
+                from_state=STATE_TODO,
+                require_states=(STATE_IN_PROGRESS,),
+            ),
             start_to_close_timeout=MOVE_ISSUE_TIMEOUT,
             retry_policy=MOVE_ISSUE_RETRY,
             result_type=bool,

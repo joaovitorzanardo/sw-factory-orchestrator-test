@@ -61,6 +61,19 @@ class TestLinearClient(unittest.IsolatedAsyncioTestCase):
         error = await self.execute_error(httpx.Response(502, text="Bad Gateway"))
         self.assertFalse(error.non_retryable)
 
+    async def test_server_error_with_graphql_errors_is_retryable(self) -> None:
+        error = await self.execute_error(
+            httpx.Response(
+                500,
+                json={
+                    "errors": [
+                        {"message": "boom", "extensions": {"code": "INTERNAL_SERVER_ERROR"}}
+                    ]
+                },
+            )
+        )
+        self.assertFalse(error.non_retryable)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,9 @@ class LinearClient:
         except ValueError:
             body = {}
 
+        # 429/5xx são temporários mesmo vindo com `errors` no corpo.
+        if response.status_code == 429 or response.status_code >= 500:
+            raise ApplicationError(f"Linear indisponível: HTTP {response.status_code}")
         errors = body.get("errors") if isinstance(body, dict) else None
         if errors:
             messages = "; ".join(str(error.get("message")) for error in errors)
@@ -37,8 +40,6 @@ class LinearClient:
             raise ApplicationError(
                 f"Linear respondeu com erro: {messages}", non_retryable=not rate_limited
             )
-        if response.status_code == 429 or response.status_code >= 500:
-            raise ApplicationError(f"Linear indisponível: HTTP {response.status_code}")
         if not response.is_success:
             # 401/403: chave inválida ou sem permissão — retentar não resolve.
             raise ApplicationError(

@@ -41,3 +41,5 @@ class MoveIssueRequest:
     to_state: str
     # Guarda: só move se o status atual for este.
     from_state: str | None = None
+    # Status que precisam existir no time, validados antes de mover ou pular (falha cedo).
+    require_states: tuple[str, ...] = ()

@@ -130,7 +130,12 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             fake.moves,
             [
-                MoveIssueRequest("issue-1", to_state="In Planning", from_state="To Do"),
+                MoveIssueRequest(
+                    "issue-1",
+                    to_state="In Planning",
+                    from_state="To Do",
+                    require_states=("In Progress",),
+                ),
                 MoveIssueRequest("issue-1", to_state="In Progress"),
             ],
         )

@@ -91,6 +91,22 @@ class TestMoveIssue(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ctx.exception.non_retryable)
         self.assertIn("In Planning", str(ctx.exception))
 
+    async def test_missing_required_state_fails_even_when_guard_skips(self) -> None:
+        states = [s for s in TEAM_STATES if s["name"] != "In Progress"]
+        with self.assertRaises(ApplicationError) as ctx:
+            await self.run_move(
+                MoveIssueRequest(
+                    "issue-1",
+                    to_state="In Planning",
+                    from_state="To Do",
+                    require_states=("In Progress",),
+                ),
+                issue_response("Done", states),
+            )
+        self.assertTrue(ctx.exception.non_retryable)
+        self.assertIn("In Progress", str(ctx.exception))
+        self.assertEqual(len(self.requests), 1)
+
     async def test_missing_issue_is_non_retryable(self) -> None:
         with self.assertRaises(ApplicationError) as ctx:
             await self.run_move(
