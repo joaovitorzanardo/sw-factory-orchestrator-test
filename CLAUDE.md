@@ -25,7 +25,9 @@ Software factory experimental (fase de teste). O objetivo é automatizar o ciclo
   `ANTHROPIC_API_KEY` (API) ou `CLAUDE_CODE_OAUTH_TOKEN` (assinatura, `claude setup-token`;
   zona cinzenta nos termos para automação em sandbox de terceiro).
 - **Git/PR:** GitHub; um único repo alvo (`TARGET_REPO=owner/repo`), clonado no sandbox com
-  `GITHUB_TOKEN` fine-grained restrito a esse repo.
+  `GITHUB_TOKEN` fine-grained restrito a esse repo, com **Contents: Read and write** (push da branch do plano).
+- **Planejamento:** skill `writing-plans` do superpowers 7.0.0, vendorizada em
+  `orchestration/skills/` (MIT) e copiada para `~/.claude/skills/` no sandbox — sem instalar plugin via rede.
 
 Ainda **não definidos** (não assumir sem confirmar com o usuário): acesso à API do Linear
 (SDK/GraphQL/MCP) para além do webhook, persistência e deploy. Ao introduzir qualquer tecnologia nova,
@@ -44,9 +46,10 @@ src/software_factory/
     events.py         # LinearIssue, should_process (filtro por label), parse_issue
     webhook.py        # POST /webhooks/linear; handle_issue inicia o PlanIssueWorkflow
   orchestration/
-    models.py         # dataclasses de entrada/saída (PlanIssueInput, PlanRequest, PlanResult)
-    activities.py     # SandboxActivities: create_sandbox, clone_repo, generate_plan, kill_sandbox
-    workflow.py       # PlanIssueWorkflow: sandbox → clone → plano → kill (finally)
+    models.py         # dataclasses de entrada/saída (PlanIssueInput, PlanRequest, CommitPlanRequest, PlanResult)
+    activities.py     # SandboxActivities: create_sandbox, clone_repo, generate_plan, commit_plan, kill_sandbox
+    workflow.py       # PlanIssueWorkflow: sandbox → clone → plano → commit → kill (finally)
+    skills/writing-plans/  # SKILL.md + LICENSE vendorizados do superpowers
     worker.py         # entrypoint `software-factory-worker`
 tests/                # unittest; payloads.py tem fixtures no formato do Linear
 ```
@@ -58,8 +61,11 @@ tests/                # unittest; payloads.py tem fixtures no formato do Linear
 - Eventos ignorados retornam 200 para o Linear não reenviar.
 - `handle_issue` inicia o `PlanIssueWorkflow` com id `plan-issue-<issue.id>`; se já houver um
   rodando responde `{"status": "duplicate"}`; se o Temporal estiver fora, 503 (o Linear reenvia).
-- O workflow hoje só **gera o plano** (retornado como resultado, visível na UI do Temporal).
-  Implementação e abertura de PR ainda **fora do escopo**.
+- O workflow hoje **gera o plano** com a skill `writing-plans` e o **commita** em
+  `docs/superpowers/plans/<IDENTIFIER>.md` na branch `factory/<IDENTIFIER>` (push feito pela
+  activity `commit_plan`; o Claude só tem permissão `Edit` nesse arquivo, sem `Bash`). Se a branch
+  já existir no remoto com outro conteúdo, falha sem force push. Implementação e abertura de PR
+  ainda **fora do escopo**.
 - Não há varredura de issues existentes em TODO (projeto novo, sem backlog).
 
 ## Comandos

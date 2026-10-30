@@ -38,7 +38,7 @@ temporal server start-dev
 | `E2B_TEMPLATE` | worker | template do sandbox (default `claude`) |
 | `ANTHROPIC_API_KEY` | worker | auth do Claude Code via API (cobrança por token) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | worker | alternativa: token da assinatura Claude (`claude setup-token`); defina só uma das duas |
-| `GITHUB_TOKEN` | worker | token fine-grained restrito ao repo alvo |
+| `GITHUB_TOKEN` | worker | token fine-grained restrito ao repo alvo, com **Contents: Read and write** |
 | `TARGET_REPO` | worker | repo que a fábrica opera (`owner/repo`) |
 
 ## Worker (Temporal + E2B)
@@ -51,10 +51,12 @@ Para cada issue aceita pelo webhook, o `PlanIssueWorkflow` (id `plan-issue-<issu
 
 1. cria um sandbox E2B (template `claude`);
 2. clona `TARGET_REPO` em `/home/user/repo`;
-3. roda `claude -p` (ferramentas só de leitura) para gerar um plano de implementação;
-4. destrói o sandbox (sempre, inclusive em falha).
+3. roda `claude -p` com a skill `writing-plans` (superpowers, vendorizada) para escrever o plano em
+   `docs/superpowers/plans/<IDENTIFIER>.md` — o Claude só pode ler o repo e escrever esse arquivo;
+4. commita o plano e faz push na branch `factory/<IDENTIFIER>`;
+5. destrói o sandbox (sempre, inclusive em falha).
 
-O plano fica no resultado do workflow, na UI do Temporal (http://localhost:8233).
+O plano e a branch ficam no resultado do workflow, na UI do Temporal (http://localhost:8233).
 
 ## Executar (servidor de webhooks)
 
