@@ -1,5 +1,10 @@
 from dataclasses import dataclass
 
+# Status do Linear procurados por nome (case-insensitive) no time da issue.
+STATE_TODO = "To Do"
+STATE_IN_PLANNING = "In Planning"
+STATE_IN_PROGRESS = "In Progress"
+
 
 @dataclass(frozen=True)
 class PlanIssueInput:
@@ -28,3 +33,11 @@ class PlanResult:
     plan: str
     sandbox_id: str
     branch: str
+
+
+@dataclass(frozen=True)
+class MoveIssueRequest:
+    issue_id: str
+    to_state: str
+    # Guarda: só move se o status atual for este.
+    from_state: str | None = None

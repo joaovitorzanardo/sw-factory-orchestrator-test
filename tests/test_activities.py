@@ -1,7 +1,9 @@
 import json
+import os
 import unittest
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
+from unittest import mock
 
 from e2b import FileNotFoundException
 from temporalio.exceptions import ApplicationError
@@ -21,6 +23,7 @@ SETTINGS = FactorySettings(
     anthropic_api_key="anthropic-key",
     github_token="gh-token",
     target_repo="acme/app",
+    linear_api_key="lin-key",
 )
 
 ISSUE = PlanIssueInput(
@@ -129,6 +132,19 @@ class TestFactorySettings(unittest.TestCase):
             replace(SETTINGS, anthropic_api_key=None)
         with self.assertRaises(RuntimeError):
             replace(SETTINGS, claude_code_oauth_token="oat-token")
+
+    def test_from_env_requires_linear_api_key(self) -> None:
+        env = {
+            "E2B_API_KEY": "e2b-key",
+            "ANTHROPIC_API_KEY": "anthropic-key",
+            "GITHUB_TOKEN": "gh-token",
+            "TARGET_REPO": "acme/app",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(RuntimeError):
+                FactorySettings.from_env()
+        with mock.patch.dict(os.environ, {**env, "LINEAR_API_KEY": "lin-key"}, clear=True):
+            self.assertEqual(FactorySettings.from_env().linear_api_key, "lin-key")
 
 
 class TestBuildPlanPrompt(unittest.TestCase):

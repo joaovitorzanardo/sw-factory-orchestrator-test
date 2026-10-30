@@ -6,13 +6,16 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from software_factory.config import FactorySettings
+from software_factory.linear.client import LinearClient
 from software_factory.orchestration.activities import SandboxActivities
+from software_factory.orchestration.linear_activities import LinearActivities
 from software_factory.orchestration.workflow import PlanIssueWorkflow
 
 
 async def run_worker(settings: FactorySettings) -> None:
     client = await Client.connect(settings.temporal_address)
     activities = SandboxActivities(settings)
+    linear = LinearActivities(LinearClient(settings.linear_api_key))
     worker = Worker(
         client,
         task_queue=settings.task_queue,
@@ -23,6 +26,7 @@ async def run_worker(settings: FactorySettings) -> None:
             activities.generate_plan,
             activities.commit_plan,
             activities.kill_sandbox,
+            linear.move_issue,
         ],
     )
     logging.getLogger(__name__).info("worker ouvindo task queue %s", settings.task_queue)

@@ -40,6 +40,8 @@ class FactorySettings:
     e2b_api_key: str
     github_token: str
     target_repo: str
+    # Personal API key do Linear: muda o status da issue.
+    linear_api_key: str
     # Auth do Claude Code no sandbox: exatamente uma das duas (API ou assinatura).
     anthropic_api_key: str | None = None
     claude_code_oauth_token: str | None = None
@@ -67,6 +69,7 @@ class FactorySettings:
             claude_code_oauth_token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or None,
             github_token=_required("GITHUB_TOKEN"),
             target_repo=_required("TARGET_REPO"),
+            linear_api_key=_required("LINEAR_API_KEY"),
             temporal_address=os.environ.get("TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS),
             task_queue=os.environ.get("TASK_QUEUE", DEFAULT_TASK_QUEUE),
             e2b_template=os.environ.get("E2B_TEMPLATE", "claude"),
