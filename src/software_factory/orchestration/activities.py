@@ -28,7 +28,6 @@ GIT_AUTHOR_NAME = "software-factory"
 GIT_AUTHOR_EMAIL = "software-factory@users.noreply.github.com"
 
 
-
 def plan_path(identifier: str) -> str:
     """Caminho do plano relativo ao repo; rejeita identifiers fora do formato do Linear."""
     if not IDENTIFIER_RE.fullmatch(identifier):
