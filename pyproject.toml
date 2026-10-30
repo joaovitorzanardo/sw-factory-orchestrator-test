@@ -27,3 +27,6 @@ software-factory-worker = "software_factory.orchestration.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"software_factory.orchestration" = ["skills/*/*"]

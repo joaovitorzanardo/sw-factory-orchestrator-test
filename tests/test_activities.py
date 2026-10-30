@@ -1,8 +1,9 @@
 import json
 import unittest
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
+from e2b import FileNotFoundException
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment
 
@@ -11,6 +12,7 @@ from software_factory.orchestration.activities import (
     REPO_DIR,
     SandboxActivities,
     build_plan_prompt,
+    plan_path,
 )
 from software_factory.orchestration.models import PlanIssueInput, PlanRequest
 
@@ -39,26 +41,44 @@ class FakeResult:
 @dataclass
 class FakeCommands:
     stdout: str = ""
+    # substring do comando -> stdout; a primeira chave contida no comando vence.
+    responses: dict[str, str] = field(default_factory=dict)
+    on_run: Callable[[str], None] | None = None
     runs: list[dict[str, Any]] = field(default_factory=list)
 
     async def run(self, cmd: str, **kwargs: Any) -> FakeResult:
         self.runs.append({"cmd": cmd, **kwargs})
+        stdout = next((out for key, out in self.responses.items() if key in cmd), self.stdout)
         on_stdout = kwargs.get("on_stdout")
-        if on_stdout and self.stdout:
-            on_stdout(self.stdout)
-        return FakeResult(stdout=self.stdout)
+        if on_stdout and stdout:
+            on_stdout(stdout)
+        if self.on_run:
+            self.on_run(cmd)
+        return FakeResult(stdout=stdout)
 
 
 @dataclass
 class FakeFiles:
     existing: set[str] = field(default_factory=set)
     written: dict[str, str] = field(default_factory=dict)
+    removed: list[str] = field(default_factory=list)
 
     async def exists(self, path: str, **kwargs: Any) -> bool:
-        return path in self.existing
+        return path in self.existing or path in self.written
 
     async def write(self, path: str, data: str, **kwargs: Any) -> None:
         self.written[path] = data
+
+    async def read(self, path: str, **kwargs: Any) -> str:
+        try:
+            return self.written[path]
+        except KeyError:
+            raise FileNotFoundException(path) from None
+
+    async def remove(self, path: str, **kwargs: Any) -> None:
+        self.written.pop(path, None)
+        self.existing.discard(path)
+        self.removed.append(path)
 
 
 class FakeSandbox:
@@ -95,6 +115,10 @@ class FakeSandbox:
         return True
 
 
+PLAN_FILE = f"{REPO_DIR}/docs/superpowers/plans/ENG-12.md"
+SKILL_DEST = "/home/user/.claude/skills/writing-plans/SKILL.md"
+
+
 def stream(*events: dict[str, Any]) -> str:
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
@@ -118,6 +142,22 @@ class TestBuildPlanPrompt(unittest.TestCase):
     def test_missing_description(self) -> None:
         issue = PlanIssueInput("issue-1", "ENG-12", "Título", None, None)
         self.assertIn("sem descrição", build_plan_prompt(issue))
+
+    def test_prompt_uses_skill_and_path(self) -> None:
+        prompt = build_plan_prompt(ISSUE)
+        self.assertIn("writing-plans", prompt)
+        self.assertIn("docs/superpowers/plans/ENG-12.md", prompt)
+
+
+class TestPlanPath(unittest.TestCase):
+    def test_plan_path(self) -> None:
+        self.assertEqual(plan_path("ENG-12"), "docs/superpowers/plans/ENG-12.md")
+
+    def test_plan_path_rejects_unsafe_identifier(self) -> None:
+        for bad in ["ENG-12; rm -rf /", "../ENG-12", "ENG", ""]:
+            with self.subTest(bad=bad), self.assertRaises(ApplicationError) as ctx:
+                plan_path(bad)
+            self.assertTrue(ctx.exception.non_retryable)
 
 
 class TestSandboxActivities(unittest.IsolatedAsyncioTestCase):
@@ -158,23 +198,56 @@ class TestSandboxActivities(unittest.IsolatedAsyncioTestCase):
         await self.env.run(self.activities.clone_repo, "sbx-1")
         self.assertEqual(FakeSandbox.instance.commands.runs, [])
 
-    async def test_generate_plan(self) -> None:
+    def claude_saves_plan(self, content: str = "# Plano\n1. fazer") -> None:
+        files = FakeSandbox.instance.files
+
+        def on_run(cmd: str) -> None:
+            if "claude -p" in cmd:
+                files.written[PLAN_FILE] = content
+
+        FakeSandbox.instance.commands.on_run = on_run
         FakeSandbox.instance.commands.stdout = stream(
             {"type": "system", "subtype": "init"},
             {"type": "assistant", "message": {}},
-            {"type": "result", "subtype": "success", "result": "# Plano\n1. fazer"},
+            {"type": "result", "subtype": "success", "result": "Plano salvo."},
         )
+
+    async def test_generate_plan(self) -> None:
+        self.claude_saves_plan()
         plan = await self.env.run(
             self.activities.generate_plan, PlanRequest(sandbox_id="sbx-1", issue=ISSUE)
         )
         self.assertEqual(plan, "# Plano\n1. fazer")
-        self.assertIn("ENG-12", FakeSandbox.instance.files.written["/home/user/prompt.md"])
+        files = FakeSandbox.instance.files
+        self.assertIn("ENG-12", files.written["/home/user/prompt.md"])
+        self.assertTrue(files.written[SKILL_DEST].startswith("---\nname: writing-plans"))
         (run,) = FakeSandbox.instance.commands.runs
         self.assertIn("claude -p", run["cmd"])
         self.assertIn("--output-format stream-json", run["cmd"])
+        self.assertIn("Skill", run["cmd"])
+        self.assertIn("Edit(docs/superpowers/plans/ENG-12.md)", run["cmd"])
+        self.assertNotIn("Bash", run["cmd"])
         self.assertEqual(run["cwd"], REPO_DIR)
         self.assertNotIn("anthropic-key", run["cmd"])
         self.assertTrue(self.heartbeats)
+
+    async def test_generate_plan_removes_stale_plan(self) -> None:
+        FakeSandbox.instance.files.written[PLAN_FILE] = "antigo"
+        self.claude_saves_plan("novo")
+        plan = await self.env.run(
+            self.activities.generate_plan, PlanRequest(sandbox_id="sbx-1", issue=ISSUE)
+        )
+        self.assertEqual(plan, "novo")
+        self.assertIn(PLAN_FILE, FakeSandbox.instance.files.removed)
+
+    async def test_generate_plan_missing_file(self) -> None:
+        FakeSandbox.instance.commands.stdout = stream(
+            {"type": "result", "subtype": "success", "result": "Plano salvo."}
+        )
+        with self.assertRaises(ApplicationError):
+            await self.env.run(
+                self.activities.generate_plan, PlanRequest(sandbox_id="sbx-1", issue=ISSUE)
+            )
 
     async def test_generate_plan_error_result(self) -> None:
         FakeSandbox.instance.commands.stdout = stream(

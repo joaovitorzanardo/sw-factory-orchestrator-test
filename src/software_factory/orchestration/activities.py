@@ -1,8 +1,10 @@
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any
 
-from e2b import AsyncSandbox
+from e2b import AsyncSandbox, FileNotFoundException
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -11,28 +13,43 @@ from software_factory.orchestration.models import PlanIssueInput, PlanRequest
 
 REPO_DIR = "/home/user/repo"
 PROMPT_PATH = "/home/user/prompt.md"
+# Skill writing-plans do superpowers 7.0.0, vendorizada (sem instalar plugin via rede).
+SKILL_SOURCE = Path(__file__).parent / "skills" / "writing-plans" / "SKILL.md"
+SKILL_DEST = "/home/user/.claude/skills/writing-plans/SKILL.md"
+PLANS_DIR = "docs/superpowers/plans"
+# O identifier vai para caminho e comando shell: só o formato do Linear (ENG-12).
+IDENTIFIER_RE = re.compile(r"[A-Za-z0-9]+-[0-9]+")
 # Hobby do E2B permite ~1h contínua; o sandbox precisa durar mais que qualquer activity.
 SANDBOX_TIMEOUT_S = 55 * 60
 PLAN_COMMAND_TIMEOUT_S = 40 * 60
 HEARTBEAT_INTERVAL_S = 30
 
-PLAN_COMMAND = (
-    f"cat {PROMPT_PATH} | claude -p --output-format stream-json --verbose"
-    ' --allowedTools "Read,Grep,Glob"'
-)
+
+
+def plan_path(identifier: str) -> str:
+    """Caminho do plano relativo ao repo; rejeita identifiers fora do formato do Linear."""
+    if not IDENTIFIER_RE.fullmatch(identifier):
+        raise ApplicationError(f"identifier inválido: {identifier!r}", non_retryable=True)
+    return f"{PLANS_DIR}/{identifier}.md"
+
+
+def plan_command(identifier: str) -> str:
+    # A regra Edit(...) cobre também a ferramenta Write; o Claude só escreve o plano.
+    return (
+        f"cat {PROMPT_PATH} | claude -p --output-format stream-json --verbose"
+        f' --allowedTools "Read,Grep,Glob,Skill,Edit({plan_path(identifier)})"'
+    )
 
 
 def build_plan_prompt(issue: PlanIssueInput) -> str:
-    return f"""Você é um engenheiro de software analisando este repositório.
+    path = plan_path(issue.identifier)
+    return f"""Use a skill `writing-plans` para escrever o plano de implementação da issue abaixo.
 
-Gere um plano de implementação para a issue abaixo. NÃO altere nenhum arquivo:
-apenas leia o código necessário e responda com o plano em Markdown, contendo:
-
-1. Contexto: o problema e o resultado esperado.
-2. Arquivos a criar/alterar, com o que muda em cada um.
-3. Passos de implementação em ordem.
-4. Testes a escrever e como verificar.
-5. Riscos e dúvidas em aberto.
+- A issue é a spec: no campo **Spec:** do cabeçalho, use "Issue {issue.identifier} ({issue.url or "-"})".
+- Salve o plano exatamente em `{path}` (substitui o caminho padrão da skill).
+- Não altere nenhum outro arquivo.
+- Pule a seção "Execution Handoff": não faça perguntas; termine assim que o plano
+  estiver salvo e revisado.
 
 ## Issue {issue.identifier}: {issue.title}
 
@@ -96,7 +113,12 @@ class SandboxActivities:
 
     @activity.defn
     async def generate_plan(self, request: PlanRequest) -> str:
+        path = plan_path(request.issue.identifier)
         sandbox = await self._connect(request.sandbox_id)
+        await sandbox.files.write(SKILL_DEST, SKILL_SOURCE.read_text())
+        # Plano de uma tentativa anterior: o Write do Claude exigiria Read antes; recomeça limpo.
+        if await sandbox.files.exists(f"{REPO_DIR}/{path}"):
+            await sandbox.files.remove(f"{REPO_DIR}/{path}")
         await sandbox.files.write(PROMPT_PATH, build_plan_prompt(request.issue))
 
         # O Claude pode ficar muito tempo sem emitir nada; heartbeat periódico além do stdout.
@@ -108,14 +130,19 @@ class SandboxActivities:
         keep_alive_task = asyncio.create_task(keep_alive())
         try:
             result = await sandbox.commands.run(
-                PLAN_COMMAND,
+                plan_command(request.issue.identifier),
                 cwd=REPO_DIR,
                 on_stdout=lambda _chunk: activity.heartbeat(),
                 timeout=PLAN_COMMAND_TIMEOUT_S,
             )
         finally:
             keep_alive_task.cancel()
-        return parse_plan(result.stdout)
+        # O texto final do Claude é só um resumo; o plano é o arquivo salvo.
+        parse_plan(result.stdout)
+        try:
+            return await sandbox.files.read(f"{REPO_DIR}/{path}")
+        except FileNotFoundException:
+            raise ApplicationError(f"Claude Code não salvou o plano em {path}") from None
 
     @activity.defn
     async def kill_sandbox(self, sandbox_id: str) -> None:
