@@ -2,27 +2,51 @@ import json
 import logging
 import time
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from software_factory.config import Settings
 from software_factory.linear.events import LinearIssue, parse_issue, should_process
 from software_factory.linear.signature import is_fresh, verify_signature
+from software_factory.orchestration.models import PlanIssueInput
+from software_factory.orchestration.workflow import PlanIssueWorkflow
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def handle_issue(issue: LinearIssue, delivery_id: str | None) -> None:
-    # Ponto de extensão: aqui entrará o start do workflow no Temporal.
+async def handle_issue(
+    client: Any, task_queue: str, issue: LinearIssue, delivery_id: str | None
+) -> bool:
+    """Inicia o PlanIssueWorkflow; retorna False se já há um rodando para a issue."""
+    workflow_id = f"plan-issue-{issue.id}"
+    try:
+        await client.start_workflow(
+            PlanIssueWorkflow.run,
+            PlanIssueInput(
+                issue_id=issue.id,
+                identifier=issue.identifier,
+                title=issue.title,
+                description=issue.description,
+                url=issue.url,
+            ),
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+    except WorkflowAlreadyStartedError:
+        logger.info("workflow %s já em execução; delivery=%s", workflow_id, delivery_id)
+        return False
     logger.info(
-        "issue aceita: %s %r labels=%s id=%s delivery=%s",
+        "workflow %s iniciado: %s %r delivery=%s",
+        workflow_id,
         issue.identifier,
         issue.title,
-        list(issue.labels),
-        issue.id,
         delivery_id,
     )
+    return True
 
 
 @router.post("/webhooks/linear")
@@ -54,5 +78,12 @@ async def linear_webhook(request: Request) -> dict[str, str]:
         )
         return {"status": "ignored"}
 
-    handle_issue(parse_issue(payload), delivery_id)
-    return {"status": "accepted"}
+    try:
+        started = await handle_issue(
+            request.app.state.temporal, settings.task_queue, parse_issue(payload), delivery_id
+        )
+    except Exception:
+        # 503 faz o Linear reenviar quando o Temporal voltar.
+        logger.exception("falha ao iniciar workflow; delivery=%s", delivery_id)
+        raise HTTPException(status_code=503, detail="orquestrador indisponível")
+    return {"status": "accepted" if started else "duplicate"}

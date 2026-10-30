@@ -17,11 +17,18 @@ Software factory experimental (fase de teste). O objetivo é automatizar o ciclo
 - **Harness de execução:** Claude Code — é quem efetivamente planeja e implementa as mudanças, invocado a partir das activities do Temporal.
 - **Fonte de tarefas:** Linear (issues), recebidas via webhook.
 - **HTTP:** FastAPI + uvicorn (servidor de webhooks).
+- **Sandbox:** [E2B](https://docs.e2b.dev) (SDK `e2b`, `AsyncSandbox`), template `claude`
+  (Claude Code pré-instalado). **Um sandbox por execução de workflow (issue)**, sempre destruído
+  no `finally`. Plano Hobby: ~1h contínua por sandbox — timeouts das activities ficam abaixo disso.
+- **Invocação do Claude Code:** CLI headless dentro do sandbox
+  (`claude -p --output-format stream-json --verbose`). Auth: exatamente uma de
+  `ANTHROPIC_API_KEY` (API) ou `CLAUDE_CODE_OAUTH_TOKEN` (assinatura, `claude setup-token`;
+  zona cinzenta nos termos para automação em sandbox de terceiro).
+- **Git/PR:** GitHub; um único repo alvo (`TARGET_REPO=owner/repo`), clonado no sandbox com
+  `GITHUB_TOKEN` fine-grained restrito a esse repo.
 
-Ainda **não definidos** (não assumir sem confirmar com o usuário): forma de
-invocar o Claude Code (CLI headless, Agent SDK etc.), acesso à API do Linear
-(SDK/GraphQL/MCP) para além do webhook, provedor de Git/PR, estratégia de workspace (clone, worktree,
-container), persistência e deploy. Ao introduzir qualquer tecnologia nova,
+Ainda **não definidos** (não assumir sem confirmar com o usuário): acesso à API do Linear
+(SDK/GraphQL/MCP) para além do webhook, persistência e deploy. Ao introduzir qualquer tecnologia nova,
 pergunte antes e atualize esta seção.
 
 ## Estrutura
@@ -31,11 +38,16 @@ src/software_factory/
   __init__.py         # __version__
   __main__.py         # entrypoint (script `software-factory`): carrega .env e sobe o uvicorn
   api.py              # create_app(): FastAPI com /health e routers
-  config.py           # Settings lidas de env (LINEAR_WEBHOOK_SECRET, HOST, PORT)
+  config.py           # Settings (webhook) e FactorySettings (worker) lidas de env
   linear/
     signature.py      # validação HMAC do Linear-Signature + anti-replay
     events.py         # LinearIssue, should_process (filtro por label), parse_issue
-    webhook.py        # POST /webhooks/linear; handle_issue = ponto de extensão (só loga)
+    webhook.py        # POST /webhooks/linear; handle_issue inicia o PlanIssueWorkflow
+  orchestration/
+    models.py         # dataclasses de entrada/saída (PlanIssueInput, PlanRequest, PlanResult)
+    activities.py     # SandboxActivities: create_sandbox, clone_repo, generate_plan, kill_sandbox
+    workflow.py       # PlanIssueWorkflow: sandbox → clone → plano → kill (finally)
+    worker.py         # entrypoint `software-factory-worker`
 tests/                # unittest; payloads.py tem fixtures no formato do Linear
 ```
 
@@ -44,8 +56,10 @@ tests/                # unittest; payloads.py tem fixtures no formato do Linear
 - Gatilho: issue `create` com label `Feature` ou `Bug` (case-insensitive), ou `update`
   em que uma dessas labels foi adicionada (`updatedFrom.labelIds`).
 - Eventos ignorados retornam 200 para o Linear não reenviar.
-- Ainda **fora do escopo**: workflow/processamento — `handle_issue` em
-  `linear/webhook.py` só loga; é ali que entrará o `start_workflow` do Temporal.
+- `handle_issue` inicia o `PlanIssueWorkflow` com id `plan-issue-<issue.id>`; se já houver um
+  rodando responde `{"status": "duplicate"}`; se o Temporal estiver fora, 503 (o Linear reenvia).
+- O workflow hoje só **gera o plano** (retornado como resultado, visível na UI do Temporal).
+  Implementação e abertura de PR ainda **fora do escopo**.
 - Não há varredura de issues existentes em TODO (projeto novo, sem backlog).
 
 ## Comandos
@@ -56,6 +70,9 @@ uv venv .venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 
 # servidor Temporal local (terminal separado) — gRPC localhost:7233, UI http://localhost:8233
 temporal server start-dev
+
+# worker do Temporal (lê .env; precisa de E2B_API_KEY, ANTHROPIC_API_KEY ou CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN, TARGET_REPO)
+software-factory-worker
 
 # servidor de webhooks (lê .env)
 software-factory

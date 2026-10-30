@@ -12,7 +12,7 @@
 uv venv .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
-cp .env.example .env   # preencha LINEAR_WEBHOOK_SECRET
+cp .env.example .env   # preencha os segredos (ver abaixo)
 ```
 
 ## Temporal (servidor local)
@@ -25,6 +25,36 @@ temporal server start-dev
 
 - Temporal Service: `localhost:7233`
 - Web UI: http://localhost:8233
+
+## Variáveis de ambiente
+
+| Variável | Usada por | Descrição |
+| --- | --- | --- |
+| `LINEAR_WEBHOOK_SECRET` | webhook | signing secret do webhook do Linear |
+| `HOST` / `PORT` | webhook | bind do servidor (default `0.0.0.0:8000`) |
+| `TEMPORAL_ADDRESS` | ambos | default `localhost:7233` |
+| `TASK_QUEUE` | ambos | default `software-factory` |
+| `E2B_API_KEY` | worker | chave da API do E2B |
+| `E2B_TEMPLATE` | worker | template do sandbox (default `claude`) |
+| `ANTHROPIC_API_KEY` | worker | auth do Claude Code via API (cobrança por token) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | worker | alternativa: token da assinatura Claude (`claude setup-token`); defina só uma das duas |
+| `GITHUB_TOKEN` | worker | token fine-grained restrito ao repo alvo |
+| `TARGET_REPO` | worker | repo que a fábrica opera (`owner/repo`) |
+
+## Worker (Temporal + E2B)
+
+```bash
+software-factory-worker
+```
+
+Para cada issue aceita pelo webhook, o `PlanIssueWorkflow` (id `plan-issue-<issue id>`):
+
+1. cria um sandbox E2B (template `claude`);
+2. clona `TARGET_REPO` em `/home/user/repo`;
+3. roda `claude -p` (ferramentas só de leitura) para gerar um plano de implementação;
+4. destrói o sandbox (sempre, inclusive em falha).
+
+O plano fica no resultado do workflow, na UI do Temporal (http://localhost:8233).
 
 ## Executar (servidor de webhooks)
 
@@ -58,7 +88,9 @@ No Linear: **Settings → API → Webhooks → New webhook**
 O endpoint valida a assinatura (`Linear-Signature`, 401 se inválida) e o
 `webhookTimestamp` (400 se tiver mais de 60s), e aceita apenas issues **criadas**
 com label `Feature`/`Bug` ou **atualizadas** recebendo uma dessas labels. Os demais
-eventos retornam 200 `{"status": "ignored"}`.
+eventos retornam 200 `{"status": "ignored"}`. Issues aceitas iniciam o workflow
+(`{"status": "accepted"}`, ou `"duplicate"` se já houver um rodando para a issue);
+se o Temporal estiver indisponível, responde 503 para o Linear reenviar.
 
 ## Testes
 

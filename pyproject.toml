@@ -13,6 +13,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "python-dotenv>=1.0",
+    "e2b>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = [
 
 [project.scripts]
 software-factory = "software_factory.__main__:main"
+software-factory-worker = "software_factory.orchestration.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
