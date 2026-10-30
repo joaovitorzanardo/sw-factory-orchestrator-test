@@ -9,7 +9,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from software_factory.config import FactorySettings
-from software_factory.orchestration.models import PlanIssueInput, PlanRequest
+from software_factory.orchestration.models import CommitPlanRequest, PlanIssueInput, PlanRequest
 
 REPO_DIR = "/home/user/repo"
 PROMPT_PATH = "/home/user/prompt.md"
@@ -23,6 +23,9 @@ IDENTIFIER_RE = re.compile(r"[A-Za-z0-9]+-[0-9]+")
 SANDBOX_TIMEOUT_S = 55 * 60
 PLAN_COMMAND_TIMEOUT_S = 40 * 60
 HEARTBEAT_INTERVAL_S = 30
+GIT_COMMAND_TIMEOUT_S = 60
+GIT_AUTHOR_NAME = "software-factory"
+GIT_AUTHOR_EMAIL = "software-factory@users.noreply.github.com"
 
 
 
@@ -31,6 +34,11 @@ def plan_path(identifier: str) -> str:
     if not IDENTIFIER_RE.fullmatch(identifier):
         raise ApplicationError(f"identifier inválido: {identifier!r}", non_retryable=True)
     return f"{PLANS_DIR}/{identifier}.md"
+
+
+def plan_branch(identifier: str) -> str:
+    plan_path(identifier)
+    return f"factory/{identifier}"
 
 
 def plan_command(identifier: str) -> str:
@@ -143,6 +151,38 @@ class SandboxActivities:
             return await sandbox.files.read(f"{REPO_DIR}/{path}")
         except FileNotFoundException:
             raise ApplicationError(f"Claude Code não salvou o plano em {path}") from None
+
+    @activity.defn
+    async def commit_plan(self, request: CommitPlanRequest) -> str:
+        path = plan_path(request.identifier)
+        branch = plan_branch(request.identifier)
+        sandbox = await self._connect(request.sandbox_id)
+        if not await sandbox.files.exists(f"{REPO_DIR}/{path}"):
+            raise ApplicationError(f"plano não encontrado em {path}")
+
+        async def git(cmd: str) -> str:
+            result = await sandbox.commands.run(cmd, cwd=REPO_DIR, timeout=GIT_COMMAND_TIMEOUT_S)
+            return result.stdout.strip()
+
+        # O token já está na URL do origin gravada pelo clone_repo; não vai no comando.
+        await git(f"git checkout -B {branch}")
+        await git(f"git add {path}")
+        await git(
+            f'git diff --cached --quiet || git -c user.name="{GIT_AUTHOR_NAME}"'
+            f' -c user.email="{GIT_AUTHOR_EMAIL}"'
+            f' commit -m "docs: plano de implementação {request.identifier}"'
+        )
+        local_sha = await git("git rev-parse HEAD")
+        remote = await git(f"git ls-remote --heads origin refs/heads/{branch}")
+        remote_sha = remote.split()[0] if remote else ""
+        if remote_sha == local_sha:
+            return branch  # retry depois de um push que já aconteceu
+        if remote_sha:
+            raise ApplicationError(
+                f"branch {branch} já existe no remoto com outro conteúdo", non_retryable=True
+            )
+        await git(f"git push -u origin {branch}")
+        return branch
 
     @activity.defn
     async def kill_sandbox(self, sandbox_id: str) -> None:

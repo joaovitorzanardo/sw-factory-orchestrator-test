@@ -14,7 +14,7 @@ from software_factory.orchestration.activities import (
     build_plan_prompt,
     plan_path,
 )
-from software_factory.orchestration.models import PlanIssueInput, PlanRequest
+from software_factory.orchestration.models import CommitPlanRequest, PlanIssueInput, PlanRequest
 
 SETTINGS = FactorySettings(
     e2b_api_key="e2b-key",
@@ -264,6 +264,56 @@ class TestSandboxActivities(unittest.IsolatedAsyncioTestCase):
             await self.env.run(
                 self.activities.generate_plan, PlanRequest(sandbox_id="sbx-1", issue=ISSUE)
             )
+
+    async def run_commit_plan(self, remote: str) -> str:
+        FakeSandbox.instance.files.existing.add(PLAN_FILE)
+        FakeSandbox.instance.commands.responses = {"rev-parse": "abc123\n", "ls-remote": remote}
+        return await self.env.run(
+            self.activities.commit_plan, CommitPlanRequest(sandbox_id="sbx-1", identifier="ENG-12")
+        )
+
+    def commands(self) -> list[str]:
+        return [run["cmd"] for run in FakeSandbox.instance.commands.runs]
+
+    async def test_commit_plan_pushes_new_branch(self) -> None:
+        branch = await self.run_commit_plan(remote="")
+        self.assertEqual(branch, "factory/ENG-12")
+        self.assertEqual(
+            self.commands(),
+            [
+                "git checkout -B factory/ENG-12",
+                "git add docs/superpowers/plans/ENG-12.md",
+                'git diff --cached --quiet || git -c user.name="software-factory"'
+                ' -c user.email="software-factory@users.noreply.github.com"'
+                ' commit -m "docs: plano de implementação ENG-12"',
+                "git rev-parse HEAD",
+                "git ls-remote --heads origin refs/heads/factory/ENG-12",
+                "git push -u origin factory/ENG-12",
+            ],
+        )
+        for run in FakeSandbox.instance.commands.runs:
+            self.assertEqual(run["cwd"], REPO_DIR)
+            self.assertNotIn("gh-token", run["cmd"])
+
+    async def test_commit_plan_idempotent_after_push(self) -> None:
+        branch = await self.run_commit_plan(remote="abc123\trefs/heads/factory/ENG-12\n")
+        self.assertEqual(branch, "factory/ENG-12")
+        self.assertFalse(any("git push" in cmd for cmd in self.commands()))
+
+    async def test_commit_plan_rejects_diverged_remote(self) -> None:
+        with self.assertRaises(ApplicationError) as ctx:
+            await self.run_commit_plan(remote="zzz999\trefs/heads/factory/ENG-12\n")
+        self.assertTrue(ctx.exception.non_retryable)
+        self.assertIn("factory/ENG-12", str(ctx.exception))
+        self.assertFalse(any("git push" in cmd for cmd in self.commands()))
+
+    async def test_commit_plan_missing_plan_file(self) -> None:
+        with self.assertRaises(ApplicationError):
+            await self.env.run(
+                self.activities.commit_plan,
+                CommitPlanRequest(sandbox_id="sbx-1", identifier="ENG-12"),
+            )
+        self.assertEqual(self.commands(), [])
 
     async def test_kill_sandbox(self) -> None:
         await self.env.run(self.activities.kill_sandbox, "sbx-1")

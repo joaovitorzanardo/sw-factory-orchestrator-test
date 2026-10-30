@@ -17,6 +17,12 @@ class PlanRequest:
 
 
 @dataclass(frozen=True)
+class CommitPlanRequest:
+    sandbox_id: str
+    identifier: str
+
+
+@dataclass(frozen=True)
 class PlanResult:
     identifier: str
     plan: str
