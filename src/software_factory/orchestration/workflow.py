@@ -4,12 +4,17 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from software_factory.orchestration.models import PlanIssueInput, PlanRequest, PlanResult
+    from software_factory.orchestration.models import (
+        CommitPlanRequest,
+        PlanIssueInput,
+        PlanRequest,
+        PlanResult,
+    )
 
 
 @workflow.defn
 class PlanIssueWorkflow:
-    """Um sandbox por issue: cria, clona o repo, gera o plano e sempre destrói o sandbox."""
+    """Um sandbox por issue: cria, clona, gera o plano, commita em factory/<issue> e sempre destrói."""
 
     @workflow.run
     async def run(self, issue: PlanIssueInput) -> PlanResult:
@@ -34,6 +39,13 @@ class PlanIssueWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=2),
                 result_type=str,
             )
+            branch: str = await workflow.execute_activity(
+                "commit_plan",
+                CommitPlanRequest(sandbox_id=sandbox_id, identifier=issue.identifier),
+                start_to_close_timeout=timedelta(minutes=3),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+                result_type=str,
+            )
         finally:
             await workflow.execute_activity(
                 "kill_sandbox",
@@ -41,4 +53,6 @@ class PlanIssueWorkflow:
                 start_to_close_timeout=timedelta(minutes=1),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )
-        return PlanResult(identifier=issue.identifier, plan=plan, sandbox_id=sandbox_id)
+        return PlanResult(
+            identifier=issue.identifier, plan=plan, sandbox_id=sandbox_id, branch=branch
+        )

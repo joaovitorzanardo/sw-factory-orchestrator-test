@@ -21,6 +21,7 @@ async def run_worker(settings: FactorySettings) -> None:
             activities.create_sandbox,
             activities.clone_repo,
             activities.generate_plan,
+            activities.commit_plan,
             activities.kill_sandbox,
         ],
     )

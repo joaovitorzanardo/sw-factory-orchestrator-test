@@ -27,3 +27,4 @@ class PlanResult:
     identifier: str
     plan: str
     sandbox_id: str
+    branch: str

@@ -6,7 +6,12 @@ from temporalio.client import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from software_factory.orchestration.models import PlanIssueInput, PlanRequest, PlanResult
+from software_factory.orchestration.models import (
+    CommitPlanRequest,
+    PlanIssueInput,
+    PlanRequest,
+    PlanResult,
+)
 from software_factory.orchestration.workflow import PlanIssueWorkflow
 
 ISSUE = PlanIssueInput(
@@ -19,8 +24,9 @@ ISSUE = PlanIssueInput(
 
 
 class FakeActivities:
-    def __init__(self, fail_plan: bool = False) -> None:
+    def __init__(self, fail_plan: bool = False, fail_commit: bool = False) -> None:
         self.fail_plan = fail_plan
+        self.fail_commit = fail_commit
         self.calls: list[str] = []
 
     @activity.defn(name="create_sandbox")
@@ -39,6 +45,13 @@ class FakeActivities:
             raise RuntimeError("claude falhou")
         return f"plano para {request.issue.identifier} em {request.sandbox_id}"
 
+    @activity.defn(name="commit_plan")
+    async def commit_plan(self, request: CommitPlanRequest) -> str:
+        self.calls.append("commit_plan")
+        if self.fail_commit:
+            raise RuntimeError("push falhou")
+        return f"factory/{request.identifier}"
+
     @activity.defn(name="kill_sandbox")
     async def kill_sandbox(self, sandbox_id: str) -> None:
         self.calls.append("kill_sandbox")
@@ -56,6 +69,7 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
                     fake.create_sandbox,
                     fake.clone_repo,
                     fake.generate_plan,
+                    fake.commit_plan,
                     fake.kill_sandbox,
                 ],
             ):
@@ -71,10 +85,16 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
         result = await self.run_workflow(fake)
         self.assertEqual(
             result,
-            PlanResult(identifier="ENG-12", plan="plano para ENG-12 em sbx-1", sandbox_id="sbx-1"),
+            PlanResult(
+                identifier="ENG-12",
+                plan="plano para ENG-12 em sbx-1",
+                sandbox_id="sbx-1",
+                branch="factory/ENG-12",
+            ),
         )
         self.assertEqual(
-            fake.calls, ["create_sandbox", "clone_repo", "generate_plan", "kill_sandbox"]
+            fake.calls,
+            ["create_sandbox", "clone_repo", "generate_plan", "commit_plan", "kill_sandbox"],
         )
 
     async def test_kills_sandbox_on_failure(self) -> None:
@@ -83,6 +103,13 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
             await self.run_workflow(fake)
         self.assertEqual(fake.calls[-1], "kill_sandbox")
         self.assertIn("generate_plan", fake.calls)
+
+    async def test_kills_sandbox_on_commit_failure(self) -> None:
+        fake = FakeActivities(fail_commit=True)
+        with self.assertRaises(WorkflowFailureError):
+            await self.run_workflow(fake)
+        self.assertEqual(fake.calls[-1], "kill_sandbox")
+        self.assertIn("commit_plan", fake.calls)
 
 
 if __name__ == "__main__":
