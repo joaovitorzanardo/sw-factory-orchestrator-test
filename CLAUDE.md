@@ -26,11 +26,12 @@ Software factory experimental (fase de teste). O objetivo é automatizar o ciclo
   zona cinzenta nos termos para automação em sandbox de terceiro).
 - **Git/PR:** GitHub; um único repo alvo (`TARGET_REPO=owner/repo`), clonado no sandbox com
   `GITHUB_TOKEN` fine-grained restrito a esse repo, com **Contents: Read and write** (push da branch do plano).
+- **Linear API:** só GraphQL (`https://api.linear.app/graphql`, não há REST), chamada com `httpx`
+  puro (`linear/client.py`, sem SDK); personal API key em `LINEAR_API_KEY` (worker), com escrita em issues.
 - **Planejamento:** skill `writing-plans` do superpowers 7.0.0, vendorizada em
   `orchestration/skills/` (MIT) e copiada para `~/.claude/skills/` no sandbox — sem instalar plugin via rede.
 
-Ainda **não definidos** (não assumir sem confirmar com o usuário): acesso à API do Linear
-(SDK/GraphQL/MCP) para além do webhook, persistência e deploy. Ao introduzir qualquer tecnologia nova,
+Ainda **não definidos** (não assumir sem confirmar com o usuário): persistência e deploy. Ao introduzir qualquer tecnologia nova,
 pergunte antes e atualize esta seção.
 
 ## Estrutura
@@ -42,13 +43,16 @@ src/software_factory/
   api.py              # create_app(): FastAPI com /health e routers
   config.py           # Settings (webhook) e FactorySettings (worker) lidas de env
   linear/
+    client.py         # LinearClient: POST GraphQL com httpx; erros → ApplicationError (retentável ou não)
     signature.py      # validação HMAC do Linear-Signature + anti-replay
     events.py         # LinearIssue, should_process (filtro por label), parse_issue
     webhook.py        # POST /webhooks/linear; handle_issue inicia o PlanIssueWorkflow
   orchestration/
-    models.py         # dataclasses de entrada/saída (PlanIssueInput, PlanRequest, CommitPlanRequest, PlanResult)
+    models.py         # dataclasses de entrada/saída (PlanIssueInput, PlanRequest, CommitPlanRequest,
+                      # MoveIssueRequest, PlanResult) e nomes dos status (STATE_*)
     activities.py     # SandboxActivities: create_sandbox, clone_repo, generate_plan, commit_plan, kill_sandbox
-    workflow.py       # PlanIssueWorkflow: sandbox → clone → plano → commit → kill (finally)
+    linear_activities.py  # LinearActivities.move_issue: muda o status da issue (por nome, no time dela)
+    workflow.py       # PlanIssueWorkflow: In Planning → sandbox → clone → plano → commit → kill (finally) → In Progress
     skills/writing-plans/  # SKILL.md + LICENSE vendorizados do superpowers
     worker.py         # entrypoint `software-factory-worker`
 tests/                # unittest; payloads.py tem fixtures no formato do Linear
@@ -66,6 +70,10 @@ tests/                # unittest; payloads.py tem fixtures no formato do Linear
   activity `commit_plan`; o Claude só tem permissão `Edit` nesse arquivo, sem `Bash`). Se a branch
   já existir no remoto com outro conteúdo, falha sem force push. Implementação e abertura de PR
   ainda **fora do escopo**.
+- Status no Linear: o workflow começa movendo a issue `To Do → In Planning` (só se estiver em
+  `To Do`; senão planeja sem mover) e, depois do commit do plano e do kill do sandbox, move para
+  `In Progress`. Status procurados por nome (case-insensitive) no time da issue; status inexistente
+  falha sem retry. Em falha não há compensação: a issue fica em `In Planning`.
 - Não há varredura de issues existentes em TODO (projeto novo, sem backlog).
 
 ## Comandos
@@ -77,7 +85,7 @@ uv venv .venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 # servidor Temporal local (terminal separado) — gRPC localhost:7233, UI http://localhost:8233
 temporal server start-dev
 
-# worker do Temporal (lê .env; precisa de E2B_API_KEY, ANTHROPIC_API_KEY ou CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN, TARGET_REPO)
+# worker do Temporal (lê .env; precisa de E2B_API_KEY, ANTHROPIC_API_KEY ou CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN, TARGET_REPO, LINEAR_API_KEY)
 software-factory-worker
 
 # servidor de webhooks (lê .env)

@@ -14,12 +14,11 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-dotenv>=1.0",
     "e2b>=2.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "httpx>=0.27",
-]
+dev = []
 
 [project.scripts]
 software-factory = "software_factory.__main__:main"

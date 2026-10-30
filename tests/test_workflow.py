@@ -3,11 +3,13 @@ import uuid
 
 from temporalio import activity
 from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from software_factory.orchestration.models import (
     CommitPlanRequest,
+    MoveIssueRequest,
     PlanIssueInput,
     PlanRequest,
     PlanResult,
@@ -24,10 +26,30 @@ ISSUE = PlanIssueInput(
 
 
 class FakeActivities:
-    def __init__(self, fail_plan: bool = False, fail_commit: bool = False) -> None:
+    def __init__(
+        self,
+        fail_plan: bool = False,
+        fail_commit: bool = False,
+        skip_planning_move: bool = False,
+        fail_planning_move: bool = False,
+    ) -> None:
         self.fail_plan = fail_plan
         self.fail_commit = fail_commit
+        self.skip_planning_move = skip_planning_move
+        self.fail_planning_move = fail_planning_move
         self.calls: list[str] = []
+        self.moves: list[MoveIssueRequest] = []
+
+    @activity.defn(name="move_issue")
+    async def move_issue(self, request: MoveIssueRequest) -> bool:
+        self.calls.append(f"move_issue:{request.to_state}")
+        self.moves.append(request)
+        if request.to_state == "In Planning":
+            if self.fail_planning_move:
+                raise ApplicationError("status não existe", non_retryable=True)
+            if self.skip_planning_move:
+                return False
+        return True
 
     @activity.defn(name="create_sandbox")
     async def create_sandbox(self, issue_id: str) -> str:
@@ -66,6 +88,7 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
                 task_queue=task_queue,
                 workflows=[PlanIssueWorkflow],
                 activities=[
+                    fake.move_issue,
                     fake.create_sandbox,
                     fake.clone_repo,
                     fake.generate_plan,
@@ -94,8 +117,40 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             fake.calls,
-            ["create_sandbox", "clone_repo", "generate_plan", "commit_plan", "kill_sandbox"],
+            [
+                "move_issue:In Planning",
+                "create_sandbox",
+                "clone_repo",
+                "generate_plan",
+                "commit_plan",
+                "kill_sandbox",
+                "move_issue:In Progress",
+            ],
         )
+        self.assertEqual(
+            fake.moves,
+            [
+                MoveIssueRequest(
+                    "issue-1",
+                    to_state="In Planning",
+                    from_state="To Do",
+                    require_states=("In Progress",),
+                ),
+                MoveIssueRequest("issue-1", to_state="In Progress"),
+            ],
+        )
+
+    async def test_plans_even_when_planning_move_is_skipped(self) -> None:
+        fake = FakeActivities(skip_planning_move=True)
+        await self.run_workflow(fake)
+        self.assertIn("commit_plan", fake.calls)
+        self.assertEqual(fake.calls[-1], "move_issue:In Progress")
+
+    async def test_planning_move_failure_creates_no_sandbox(self) -> None:
+        fake = FakeActivities(fail_planning_move=True)
+        with self.assertRaises(WorkflowFailureError):
+            await self.run_workflow(fake)
+        self.assertEqual(fake.calls, ["move_issue:In Planning"])
 
     async def test_kills_sandbox_on_failure(self) -> None:
         fake = FakeActivities(fail_plan=True)
@@ -103,6 +158,7 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
             await self.run_workflow(fake)
         self.assertEqual(fake.calls[-1], "kill_sandbox")
         self.assertIn("generate_plan", fake.calls)
+        self.assertNotIn("move_issue:In Progress", fake.calls)
 
     async def test_kills_sandbox_on_commit_failure(self) -> None:
         fake = FakeActivities(fail_commit=True)
@@ -110,6 +166,7 @@ class TestPlanIssueWorkflow(unittest.IsolatedAsyncioTestCase):
             await self.run_workflow(fake)
         self.assertEqual(fake.calls[-1], "kill_sandbox")
         self.assertIn("commit_plan", fake.calls)
+        self.assertNotIn("move_issue:In Progress", fake.calls)
 
 
 if __name__ == "__main__":

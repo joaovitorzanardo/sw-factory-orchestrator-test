@@ -40,6 +40,7 @@ temporal server start-dev
 | `CLAUDE_CODE_OAUTH_TOKEN` | worker | alternativa: token da assinatura Claude (`claude setup-token`); defina só uma das duas |
 | `GITHUB_TOKEN` | worker | token fine-grained restrito ao repo alvo, com **Contents: Read and write** |
 | `TARGET_REPO` | worker | repo que a fábrica opera (`owner/repo`) |
+| `LINEAR_API_KEY` | worker | personal API key do Linear, com escrita em issues (muda o status) |
 
 ## Worker (Temporal + E2B)
 
@@ -49,12 +50,19 @@ software-factory-worker
 
 Para cada issue aceita pelo webhook, o `PlanIssueWorkflow` (id `plan-issue-<issue id>`):
 
-1. cria um sandbox E2B (template `claude`);
-2. clona `TARGET_REPO` em `/home/user/repo`;
-3. roda `claude -p` com a skill `writing-plans` (superpowers, vendorizada) para escrever o plano em
+1. move a issue de `To Do` para `In Planning` no Linear (se ela não estiver em `To Do`, não move
+   e segue planejando);
+2. cria um sandbox E2B (template `claude`);
+3. clona `TARGET_REPO` em `/home/user/repo`;
+4. roda `claude -p` com a skill `writing-plans` (superpowers, vendorizada) para escrever o plano em
    `docs/superpowers/plans/<IDENTIFIER>.md` — o Claude só pode ler o repo e escrever esse arquivo;
-4. commita o plano e faz push na branch `factory/<IDENTIFIER>`;
-5. destrói o sandbox (sempre, inclusive em falha).
+5. commita o plano e faz push na branch `factory/<IDENTIFIER>`;
+6. destrói o sandbox (sempre, inclusive em falha);
+7. move a issue para `In Progress`.
+
+Os status `To Do`, `In Planning` e `In Progress` precisam existir no time da issue (o nome é
+comparado sem diferenciar maiúsculas). Em falha a issue fica no status em que estava, normalmente
+`In Planning`. A API do Linear é só GraphQL (`https://api.linear.app/graphql`), chamada com `httpx`.
 
 O plano e a branch ficam no resultado do workflow, na UI do Temporal (http://localhost:8233).
 
